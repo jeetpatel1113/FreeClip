@@ -1,0 +1,15 @@
+# NVIDIA GPU override (requires the NVIDIA Container Toolkit on the host):
+#   docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d
+services:
+  worker:
+    environment:
+      WHISPER_DEVICE: cuda
+      WHISPER_COMPUTE_TYPE: float16
+      FFMPEG_ENCODER: auto
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu, video, compute, utility]

@@ -1,0 +1,180 @@
+generator client {
+  provider      = "prisma-client-js"
+  binaryTargets = ["native", "debian-openssl-3.0.x", "linux-musl-openssl-3.0.x"]
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum SourceType {
+  URL
+  UPLOAD
+}
+
+enum ProjectStatus {
+  QUEUED
+  DOWNLOADING
+  TRANSCRIBING
+  CURATING
+  REFRAMING
+  CAPTIONING
+  READY
+  FAILED
+}
+
+enum ClipStatus {
+  PENDING
+  RENDERING
+  READY
+  FAILED
+}
+
+enum CaptionStyle {
+  HORMOZI
+  MINIMALIST
+  NEON
+}
+
+enum Platform {
+  INSTAGRAM
+  TIKTOK
+  YOUTUBE
+  X
+  LINKEDIN
+}
+
+enum PostStatus {
+  SCHEDULED
+  QUEUED
+  PUBLISHING
+  PUBLISHED
+  FAILED
+  CANCELLED
+}
+
+enum PostSource {
+  MANUAL
+  AUTOPILOT
+}
+
+model User {
+  id                      String          @id @default(cuid())
+  email                   String          @unique
+  name                    String?
+  autopilotEnabled        Boolean         @default(false)
+  autopilotPlatforms      Platform[]      @default([])
+  autopilotMinScore       Int             @default(75)
+  autopilotMaxPostsPerDay Int             @default(3)
+  autopilotPostingHours   Int[]           @default([9, 13, 18])
+  timezone                String          @default("UTC")
+  defaultCaptionStyle     CaptionStyle    @default(HORMOZI)
+  createdAt               DateTime        @default(now())
+  updatedAt               DateTime        @updatedAt
+  projects                Project[]
+  socialAccounts          SocialAccount[]
+}
+
+model Project {
+  id            String        @id @default(cuid())
+  userId        String
+  user          User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  title         String
+  sourceType    SourceType
+  sourceUrl     String?
+  sourceKey     String?
+  sourcePlatform String?
+  status        ProjectStatus @default(QUEUED)
+  progress      Int           @default(0)
+  statusMessage String?
+  error         String?
+  durationMs    Int?
+  thumbnailKey  String?
+  transcript    Json?
+  captionStyle  CaptionStyle  @default(HORMOZI)
+  brollEnabled  Boolean       @default(false)
+  clipCountMin  Int           @default(5)
+  clipCountMax  Int           @default(10)
+  createdAt     DateTime      @default(now())
+  updatedAt     DateTime      @updatedAt
+  clips         Clip[]
+
+  @@index([userId, createdAt])
+}
+
+model Clip {
+  id             String          @id @default(cuid())
+  projectId      String
+  project        Project         @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  index          Int
+  title          String
+  startMs        Int
+  endMs          Int
+  viralityScore  Int
+  hook           String
+  hookBreakdown  Json
+  reasoning      String
+  words          Json
+  captions       Json
+  hashtags       String[]
+  brollKeywords  String[]        @default([])
+  captionStyle   CaptionStyle    @default(HORMOZI)
+  layout         String?
+  status         ClipStatus      @default(PENDING)
+  error          String?
+  videoKey       String?
+  thumbnailKey   String?
+  renderVersion  Int             @default(0)
+  createdAt      DateTime        @default(now())
+  updatedAt      DateTime        @updatedAt
+  scheduledPosts ScheduledPost[]
+
+  @@unique([projectId, index])
+  @@index([viralityScore])
+}
+
+model SocialAccount {
+  id              String          @id @default(cuid())
+  userId          String
+  user            User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  platform        Platform
+  accountName     String?
+  externalId      String?
+  accessTokenEnc  String?
+  refreshTokenEnc String?
+  clientId        String?
+  clientSecretEnc String?
+  expiresAt       DateTime?
+  meta            Json            @default("{}")
+  enabled         Boolean         @default(true)
+  createdAt       DateTime        @default(now())
+  updatedAt       DateTime        @updatedAt
+  scheduledPosts  ScheduledPost[]
+
+  @@unique([userId, platform])
+}
+
+model ScheduledPost {
+  id              String         @id @default(cuid())
+  clipId          String
+  clip            Clip           @relation(fields: [clipId], references: [id], onDelete: Cascade)
+  socialAccountId String?
+  socialAccount   SocialAccount? @relation(fields: [socialAccountId], references: [id], onDelete: SetNull)
+  platform        Platform
+  scheduledFor    DateTime
+  status          PostStatus     @default(SCHEDULED)
+  source          PostSource     @default(MANUAL)
+  caption         String?
+  externalPostId  String?
+  externalUrl     String?
+  error           String?
+  agentLog        Json?
+  attempts        Int            @default(0)
+  publishedAt     DateTime?
+  createdAt       DateTime       @default(now())
+  updatedAt       DateTime       @updatedAt
+
+  @@index([status, scheduledFor])
+  @@index([platform, publishedAt])
+}

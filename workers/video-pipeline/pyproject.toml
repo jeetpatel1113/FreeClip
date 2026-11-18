@@ -1,0 +1,16 @@
+[project]
+name = "freeclip-video-pipeline"
+version = "1.0.0"
+requires-python = ">=3.11,<3.12"
+
+[tool.ruff]
+line-length = 120
+target-version = "py311"
+extend-exclude = [".venv"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "BLE"]
+ignore = ["B008"]
+
+[tool.ruff.lint.per-file-ignores]
+"pipeline/captions.py" = ["E501"]

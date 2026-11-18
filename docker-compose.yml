@@ -1,0 +1,138 @@
+# FreeClip: one-command self-hosted stack.
+#   cp .env.example .env   # fill in ANTHROPIC_API_KEY + generate the secrets
+#   docker compose up -d
+# GPU VPS: docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d
+
+name: freeclip
+
+x-common-env: &common-env
+  REDIS_URL: redis://redis:6379
+  INTERNAL_API_TOKEN: ${INTERNAL_API_TOKEN:?set INTERNAL_API_TOKEN in .env}
+  S3_ENDPOINT: http://minio:9000
+  S3_PUBLIC_ENDPOINT: ${S3_PUBLIC_ENDPOINT:-http://localhost:9000}
+  S3_REGION: us-east-1
+  S3_BUCKET: ${S3_BUCKET:-freeclip}
+  S3_ACCESS_KEY: ${MINIO_ROOT_USER:-freeclip}
+  S3_SECRET_KEY: ${MINIO_ROOT_PASSWORD:?set MINIO_ROOT_PASSWORD in .env}
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: freeclip
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: freeclip
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U freeclip -d freeclip"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    # BullMQ requires noeviction so queued jobs are never dropped.
+    command: ["redis-server", "--appendonly", "yes", "--maxmemory-policy", "noeviction"]
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  minio:
+    image: minio/minio:RELEASE.2025-04-22T22-12-26Z
+    restart: unless-stopped
+    command: ["server", "/data", "--console-address", ":9001"]
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-freeclip}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?set MINIO_ROOT_PASSWORD in .env}
+      MINIO_API_CORS_ALLOW_ORIGIN: "*"
+    ports:
+      - "${MINIO_PORT:-9000}:9000"
+      - "127.0.0.1:${MINIO_CONSOLE_PORT:-9001}:9001"
+    volumes:
+      - minio-data:/data
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  api:
+    build:
+      context: .
+      dockerfile: apps/api/Dockerfile
+    restart: unless-stopped
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis: { condition: service_healthy }
+      minio: { condition: service_healthy }
+    environment:
+      <<: *common-env
+      NODE_ENV: production
+      PORT: 4000
+      DATABASE_URL: postgresql://freeclip:${POSTGRES_PASSWORD}@postgres:5432/freeclip?schema=public
+      ENCRYPTION_KEY: ${ENCRYPTION_KEY:?set ENCRYPTION_KEY in .env}
+      API_AUTH_TOKEN: ${API_AUTH_TOKEN:-}
+      CORS_ORIGIN: ${WEB_ORIGIN:-http://localhost:3000}
+      DEFAULT_USER_EMAIL: ${DEFAULT_USER_EMAIL:-owner@freeclip.local}
+    ports:
+      - "127.0.0.1:${API_PORT:-4000}:4000"
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://localhost:4000/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 20s
+
+  web:
+    build:
+      context: .
+      dockerfile: apps/web/Dockerfile
+    restart: unless-stopped
+    depends_on:
+      api: { condition: service_healthy }
+    environment:
+      API_INTERNAL_URL: http://api:4000
+      API_AUTH_TOKEN: ${API_AUTH_TOKEN:-}
+    ports:
+      - "${WEB_PORT:-3000}:3000"
+
+  worker:
+    build:
+      context: .
+      dockerfile: workers/video-pipeline/Dockerfile
+    restart: unless-stopped
+    depends_on:
+      api: { condition: service_healthy }
+    environment:
+      <<: *common-env
+      API_URL: http://api:4000
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:?set ANTHROPIC_API_KEY in .env}
+      ANTHROPIC_MODEL: ${ANTHROPIC_MODEL:-claude-opus-5-5}
+      WHISPER_MODEL: ${WHISPER_MODEL:-large-v3}
+      WHISPER_DEVICE: ${WHISPER_DEVICE:-auto}
+      USE_WHISPERX: ${USE_WHISPERX:-0}
+      FFMPEG_ENCODER: ${FFMPEG_ENCODER:-auto}
+      PEXELS_API_KEY: ${PEXELS_API_KEY:-}
+      PIPELINE_CONCURRENCY: ${PIPELINE_CONCURRENCY:-1}
+      PUBLISH_CONCURRENCY: ${PUBLISH_CONCURRENCY:-2}
+      PUBLISH_DRY_RUN: ${PUBLISH_DRY_RUN:-0}
+      TIKTOK_PRIVACY_LEVEL: ${TIKTOK_PRIVACY_LEVEL:-SELF_ONLY}
+      YOUTUBE_PRIVACY_STATUS: ${YOUTUBE_PRIVACY_STATUS:-public}
+      MAX_SOURCE_MINUTES: ${MAX_SOURCE_MINUTES:-240}
+    volumes:
+      - whisper-models:/models
+      - worker-tmp:/tmp/freeclip
+
+volumes:
+  postgres-data:
+  redis-data:
+  minio-data:
+  whisper-models:
+  worker-tmp:

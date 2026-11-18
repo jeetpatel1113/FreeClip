@@ -1,0 +1,19 @@
+# Queue + service plumbing
+bullmq>=2.9,<3
+requests>=2.32,<3
+boto3>=1.35,<2
+pydantic>=2.8,<3
+
+# Claude (curation + autonomous publishing agent)
+anthropic>=2.10,<3
+
+# Ingest
+yt-dlp>=2025.1.1
+faster-whisper>=1.1,<2
+# whisperx is optional (better word alignment); install with: pip install whisperx
+
+# Vision / audio
+numpy>=1.26,<2.0
+opencv-python-headless>=4.10,<5
+mediapipe==0.10.14
+webrtcvad-wheels>=2.0.14

@@ -1,1 +1,157 @@
 # FreeClip
+
+A self-hosted AI clipping studio. Paste a YouTube, Twitch or Kick link (or upload an MP4). FreeClip transcribes it, has Claude pick the 5-10 moments most likely to go viral, crops each one to a smooth 1080x1920 vertical video that follows the active speaker, burns in animated word-by-word captions, and can publish to TikTok, Instagram Reels, YouTube Shorts, X and LinkedIn on a schedule or fully on Auto-Pilot.
+
+Everything runs on your own machine or GPU VPS with one command.
+
+```
+docker compose up -d
+```
+
+---
+
+## Features
+
+| | |
+|---|---|
+| **Ingest** | `yt-dlp` downloads best-quality MP4 (≤1080p) from YouTube, Twitch VODs/clips and Kick, or direct uploads go straight to MinIO by presigned URL. Audio is extracted as 16 kHz mono WAV. |
+| **Transcription** | `faster-whisper` (CUDA when available) with word-level millisecond timestamps and VAD filtering. Optional `whisperx` forced alignment for tighter boundaries. |
+| **AI viral curation** | Claude (`claude-opus-5-5`, structured outputs) reads the timestamped transcript and returns standalone 30-60 s clips with a virality score (0-100), an on-screen hook, a hook breakdown (type, first 3 s, emotional trigger, payoff, sub-scores), and platform-native captions and hashtags. Boundaries are snapped to exact word timestamps, finished on sentence ends, and de-overlapped. |
+| **Active speaker reframing** | MediaPipe Face Mesh tracks faces, lip-gap variance measures who is talking, WebRTC VAD gates it to real speech, and hysteresis prevents flicker. A constant-velocity Kalman filter plus a dead-zone and a moving average gives smooth, jitter-free camera motion. Two people trading turns get an automatic stacked split-screen. |
+| **Dynamic captions** | Generated `.ass` subtitles with word-by-word highlighting. Styles: **Hormozi Bold** (uppercase, yellow/green pop), **Minimalist** (dimmed inactive words), **Neon** (glowing cyan outline, magenta active word). Burned in with FFmpeg (NVENC when available). |
+| **B-roll** | Optional Pexels stock cutaways, placed using keywords Claude suggests and kept clear of the hook and the payoff. |
+| **Clip studio** | 9:16 grid sorted by virality, hook breakdown, inline transcript editor (fixes re-render the captions), caption style switcher, download, and a Publish Now / Schedule modal. |
+| **Autonomous publishing agent** | A Claude tool-use agent reviews each post at publish time: it reads your 14-day posting history, rewrites the caption for the platform, defers Auto-Pilot posts that would repeat a recent topic, and calls the platform upload tool directly. Every step is logged and shown in the Schedule page. |
+| **Auto-Pilot** | When a project finishes, clips above your score threshold are slotted into your posting hours (timezone-aware, with a per-platform daily cap) and published automatically. |
+
+## Architecture
+
+```
+┌──────────────┐   /api proxy    ┌─────────────────────┐   BullMQ    ┌──────────────────────────────┐
+│  apps/web    │ ──────────────▶ │  apps/api           │ ──────────▶ │ workers/video-pipeline       │
+│  Next.js 15  │                 │  Fastify + Prisma   │   (Redis)   │ Python 3.11 · FFmpeg · CUDA  │
+│  Tailwind +  │ ◀── presigned ─ │  BullMQ + scheduler │ ◀────────── │ ingest → curator → reframer  │
+│  shadcn/ui   │     MinIO URLs  │  REST + /internal   │  callbacks  │ → captions → publisher agent │
+└──────────────┘                 └─────────┬───────────┘             └───────────────┬──────────────┘
+                                           │ PostgreSQL                              │ MinIO (S3)
+```
+
+* **Queues.** `video-pipeline` carries the `process-project` and `render-clip` jobs, and `publish` carries `publish-post` (delayed jobs, one per scheduled post). A `scheduler` cron (`*/5 * * * *`) re-enqueues due posts whose jobs were lost, recovers stuck posts, and picks up agent-deferred posts.
+* **Exactly-once posting.** The worker atomically *claims* a post (`SCHEDULED/QUEUED → PUBLISHING`) before the agent runs, and the agent can call the upload tool for only one platform, at most once.
+* **Security.** OAuth tokens are encrypted with AES-256-GCM (`ENCRYPTION_KEY`). The worker talks to `/internal/*` with `INTERNAL_API_TOKEN`. The browser never sees either, because the web app proxies the API server-side and can add `API_AUTH_TOKEN`.
+
+```
+apps/
+  api/            Fastify REST API, Prisma schema, BullMQ producers, cron scheduler, Auto-Pilot planner
+  web/            Next.js dashboard, clip studio, schedule, accounts & automation
+workers/
+  video-pipeline/
+    worker.py     BullMQ consumer (asyncio + worker threads)
+    pipeline/
+      ingest.py       yt-dlp download, 16 kHz WAV, faster-whisper / whisperx word timestamps
+      curator.py      Claude structured-output curation + word-boundary snapping
+      reframer.py     Face Mesh + VAD active speaker, Kalman smoothing, split-screen, OpenCV→FFmpeg
+      captions.py     .ass generation (3 styles) + burn-in, B-roll overlay graph
+      broll.py        Pexels search/download
+      publisher.py    Claude tool-use publishing agent
+      social_apis.py  Instagram Graph, TikTok Content Posting, YouTube Data v3, X v2, LinkedIn uploads
+      jobs.py         job orchestration and progress callbacks
+```
+
+## Quick start
+
+Requirements: Docker with Compose v2. For speed you'll want an NVIDIA GPU with the [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html); CPU works but is slow with `large-v3`.
+
+```bash
+git clone https://github.com/jeetpatel1113/FreeClip && cd FreeClip
+cp .env.example .env
+# Generate secrets:
+for k in POSTGRES_PASSWORD MINIO_ROOT_PASSWORD INTERNAL_API_TOKEN ENCRYPTION_KEY; do
+  sed -i "s|^$k=.*|$k=$(openssl rand -hex 32)|" .env
+done
+# Then set ANTHROPIC_API_KEY in .env
+
+docker compose up -d                                              # CPU
+docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d   # NVIDIA GPU
+```
+
+Open http://localhost:3000. The MinIO console is at http://localhost:9001.
+
+The first run downloads the Whisper model (~3 GB for `large-v3`) into the `whisper-models` volume. On CPU, set `WHISPER_MODEL=small` or `distil-large-v3`.
+
+### Deploying on a VPS
+
+* Put the web app (port 3000) and MinIO (port 9000) behind HTTPS with a reverse proxy such as Caddy or Nginx.
+* Set `WEB_ORIGIN=https://clips.example.com` and `S3_PUBLIC_ENDPOINT=https://media.example.com`. **Instagram requires** a public HTTPS video URL, so the media host must be reachable from the internet.
+* Set `API_AUTH_TOKEN` and protect the web app with your proxy's auth (for example basic auth or an SSO forward-auth). FreeClip is single-tenant: everyone who can reach the dashboard is the owner.
+
+## Configuration
+
+All settings live in [`.env.example`](.env.example), with step-by-step instructions for getting **Anthropic, Instagram, TikTok, YouTube, X and LinkedIn** credentials. Social tokens are entered in the UI (**Accounts & Automation**), not in `.env`.
+
+| Variable | Default | Notes |
+|---|---|---|
+| `ANTHROPIC_API_KEY` | (required) | From console.anthropic.com |
+| `ANTHROPIC_MODEL` | `claude-opus-5-5` | Used for curation and the publishing agent |
+| `WHISPER_MODEL` | `large-v3` | `small`/`distil-large-v3` for CPU |
+| `USE_WHISPERX` | `0` | Needs `pip install whisperx` in the worker image |
+| `FFMPEG_ENCODER` | `auto` | `auto` tests NVENC once, then falls back to libx264 |
+| `PEXELS_API_KEY` | (empty) | Enables B-roll |
+| `PUBLISH_DRY_RUN` | `0` | Run the agent without sending uploads |
+| `TIKTOK_PRIVACY_LEVEL` | `SELF_ONLY` | Required until your TikTok app is audited |
+
+Claude requests use the server-side refusal fallback (`fallbacks: "default"`, beta `server-side-fallback-2026-07-01`). If Opus declines a request, the API retries it on a fallback model inside the same call.
+
+## Local development
+
+```bash
+npm install                                   # installs apps/api + apps/web workspaces
+docker compose up -d postgres redis minio     # infra only
+
+# API
+cd apps/api
+export DATABASE_URL=postgresql://freeclip:<pw>@localhost:5432/freeclip INTERNAL_API_TOKEN=... ENCRYPTION_KEY=... \
+       S3_ACCESS_KEY=freeclip S3_SECRET_KEY=<minio pw>
+npx prisma db push && npm run dev
+
+# Web
+cd apps/web && API_INTERNAL_URL=http://localhost:4000 npm run dev
+
+# Worker (needs ffmpeg on PATH)
+cd workers/video-pipeline
+python3.11 -m venv .venv && . .venv/bin/activate && pip install -r requirements.txt
+API_URL=http://localhost:4000 INTERNAL_API_TOKEN=... ANTHROPIC_API_KEY=... python worker.py
+```
+
+### Checks
+
+```bash
+npm run typecheck && npm run lint && npm run build     # api + web
+cd workers/video-pipeline && ruff check . && python tests/test_smoke.py
+```
+
+The smoke tests run offline. They check the structured-output schema, 30-60 s boundary snapping, `.ass` generation for every style, Kalman jitter reduction, and a real FFmpeg reframe plus caption burn on a synthetic video.
+
+## REST API
+
+| Method | Path | |
+|---|---|---|
+| `POST` | `/uploads/presign` | Presigned PUT for direct-to-MinIO uploads |
+| `POST` | `/projects` | `{ sourceUrl \| sourceKey, captionStyle?, brollEnabled?, clipCountMin?, clipCountMax? }` |
+| `GET` | `/projects`, `/projects/:id` | Progress, clips (sorted by virality) and presigned media URLs |
+| `POST` | `/projects/:id/retry` | Re-run a failed project |
+| `PATCH` | `/clips/:id` | Edit title, hook, words, caption style or captions (re-renders when visuals change) |
+| `POST` | `/clips/:id/publish` | `{ platforms[], scheduledFor?, captions? }` |
+| `GET` / `PATCH` / `DELETE` | `/posts[/:id]` | Schedule, reschedule, cancel; `POST /posts/:id/retry` |
+| `GET` / `PATCH` | `/settings` | Auto-Pilot and defaults |
+| `PUT` / `DELETE` | `/social-accounts/:platform` | Store or remove encrypted credentials |
+
+## Notes and limits
+
+* Only download content you have the rights to. yt-dlp may need `YTDLP_COOKIES_FILE` for age-restricted or members-only videos.
+* Platform APIs change often and need app review: TikTok direct post needs an audited app for public posts, YouTube uploads from unverified projects stay private, X media upload needs a paid API tier, and Instagram needs a Business/Creator account linked to a Page.
+* Long sources (2-4 h) fit easily in Claude's context window. Curation cost scales with transcript length.
+
+## License
+
+MIT, see [LICENSE](LICENSE).
