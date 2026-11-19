@@ -24,9 +24,13 @@ class Settings:
     s3_access_key: str = field(default_factory=lambda: os.getenv("S3_ACCESS_KEY", "minioadmin"))
     s3_secret_key: str = field(default_factory=lambda: os.getenv("S3_SECRET_KEY", "minioadmin"))
 
-    anthropic_model: str = field(default_factory=lambda: os.getenv("ANTHROPIC_MODEL", "claude-opus-5-5"))
-    curator_effort: str = field(default_factory=lambda: os.getenv("CURATOR_EFFORT", "high"))
-    publisher_effort: str = field(default_factory=lambda: os.getenv("PUBLISHER_EFFORT", "medium"))
+    gemini_model: str = field(default_factory=lambda: os.getenv("GEMINI_MODEL", "gemini-2.5-flash"))
+    # BLOCK_NONE | BLOCK_ONLY_HIGH | BLOCK_MEDIUM_AND_ABOVE | OFF
+    gemini_safety_threshold: str = field(default_factory=lambda: os.getenv("GEMINI_SAFETY_THRESHOLD", "BLOCK_NONE"))
+    # -1 = dynamic thinking, 0 = off (Flash only), >0 = token budget. Empty = model default.
+    gemini_thinking_budget: int | None = field(
+        default_factory=lambda: int(v) if (v := os.getenv("GEMINI_THINKING_BUDGET", "-1").strip()) else None
+    )
 
     whisper_model: str = field(default_factory=lambda: os.getenv("WHISPER_MODEL", "large-v3"))
     whisper_device: str = field(default_factory=lambda: os.getenv("WHISPER_DEVICE", "auto"))

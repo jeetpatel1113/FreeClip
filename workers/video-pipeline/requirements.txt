@@ -4,8 +4,8 @@ requests>=2.32,<3
 boto3>=1.35,<2
 pydantic>=2.8,<3
 
-# Claude (curation + autonomous publishing agent)
-anthropic>=2.10,<3
+# Gemini (curation + autonomous publishing agent)
+google-genai>=1.40,<4
 
 # Ingest
 yt-dlp>=2025.1.1

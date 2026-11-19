@@ -42,7 +42,7 @@ async def publish_processor(job, _token):  # noqa: ANN001
 
 
 def _check_env() -> None:
-    missing = [k for k in ("INTERNAL_API_TOKEN", "ANTHROPIC_API_KEY") if not os.getenv(k)]
+    missing = [k for k in ("INTERNAL_API_TOKEN", "GEMINI_API_KEY") if not os.getenv(k)]
     if missing:
         raise SystemExit(f"Missing required environment variables: {', '.join(missing)}")
 

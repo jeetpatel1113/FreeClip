@@ -219,7 +219,7 @@ export default function SettingsPage() {
             </CardTitle>
             <CardDescription>
               When a project finishes, its best clips are scheduled into your posting slots automatically. Before each
-              post, Claude rewrites the caption for the platform and holds back topics you posted recently.
+              post, Gemini rewrites the caption for the platform and holds back topics you posted recently.
             </CardDescription>
           </div>
           <Switch checked={user.autopilotEnabled} onCheckedChange={(v) => saveSettings({ autopilotEnabled: v })} />

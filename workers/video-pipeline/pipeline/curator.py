@@ -1,6 +1,6 @@
-"""AI viral curation with Claude (Anthropic SDK, structured outputs).
+"""AI viral curation with Gemini (Google GenAI SDK, structured outputs).
 
-Claude reads the timestamped transcript and returns 5-10 standalone 30-60 s clips with a
+Gemini reads the timestamped transcript and returns 5-10 standalone 30-60 s clips with a
 virality score, an on-screen hook, a hook breakdown, and platform-native captions/hashtags.
 Clip boundaries are then snapped to exact word timestamps and validated locally.
 """
@@ -12,9 +12,10 @@ import logging
 import re
 from typing import Any
 
-import anthropic
-from pydantic import BaseModel, Field, ValidationError
+from google.genai import errors, types
+from pydantic import BaseModel, ValidationError
 
+from . import gemini
 from .config import settings
 
 log = logging.getLogger(__name__)
@@ -60,35 +61,13 @@ class CuratedClip(BaseModel):
     hook_breakdown: HookBreakdown
     reasoning: str
     captions: PlatformCaptions
-    hashtags: list[str] = Field(default_factory=list)
-    broll_keywords: list[str] = Field(default_factory=list)
+    hashtags: list[str]
+    broll_keywords: list[str]
 
 
 class CurationResult(BaseModel):
     clips: list[CuratedClip]
 
-
-def _strict(schema: dict[str, Any]) -> dict[str, Any]:
-    """Make a Pydantic JSON schema acceptable to structured outputs (closed objects, all required)."""
-    defs = schema.pop("$defs", {})
-
-    def walk(node: Any) -> Any:
-        if isinstance(node, dict):
-            if "$ref" in node:
-                return walk(defs[node["$ref"].split("/")[-1]])
-            node = {k: walk(v) for k, v in node.items() if k not in {"title", "default"}}
-            if node.get("type") == "object":
-                node["additionalProperties"] = False
-                node["required"] = list(node.get("properties", {}).keys())
-            return node
-        if isinstance(node, list):
-            return [walk(x) for x in node]
-        return node
-
-    return walk(schema)
-
-
-OUTPUT_SCHEMA = _strict(CurationResult.model_json_schema())
 
 SYSTEM_PROMPT = """You are a senior short-form video editor who has cut thousands of TikToks, Reels \
 and YouTube Shorts that went viral. You find the moments inside long-form videos (podcasts, \
@@ -153,11 +132,10 @@ def _line(chunk: list[dict[str, Any]]) -> str:
     return f"[{chunk[0]['start'] / 1000:.2f}-{chunk[-1]['end'] / 1000:.2f}] {text}"
 
 
-# --------------------------------------------------------------------------- Claude call
+# --------------------------------------------------------------------------- Gemini call
 
 
-def _call_claude(transcript_text: str, duration_ms: int, title: str | None, n_min: int, n_max: int) -> CurationResult:
-    client = anthropic.Anthropic()
+def _call_gemini(transcript_text: str, duration_ms: int, title: str | None, n_min: int, n_max: int) -> CurationResult:
     user = (
         f"Source title: {title or 'unknown'}\n"
         f"Source duration: {_fmt_ts(duration_ms)} ({duration_ms / 1000:.0f} s)\n"
@@ -166,32 +144,34 @@ def _call_claude(transcript_text: str, duration_ms: int, title: str | None, n_mi
         "Each transcript line is [start_seconds-end_seconds] text.\n\n"
         f"<transcript>\n{transcript_text}\n</transcript>"
     )
-    with client.beta.messages.stream(
-        model=settings.anthropic_model,
-        max_tokens=64_000,
-        betas=["server-side-fallback-2026-07-01"],
-        fallbacks="default",
-        thinking={"type": "adaptive"},
-        output_config={
-            "effort": settings.curator_effort,
-            "format": {"type": "json_schema", "schema": OUTPUT_SCHEMA},
-        },
-        system=SYSTEM_PROMPT,
-        messages=[{"role": "user", "content": user}],
-    ) as stream:
-        message = stream.get_final_message()
-
-    log.info("curation request %s stop_reason=%s usage=%s", message._request_id, message.stop_reason, message.usage)
-    if message.stop_reason == "refusal":
-        details = getattr(message, "stop_details", None)
-        raise RuntimeError(f"Claude declined to curate this video ({getattr(details, 'category', None)}).")
-    if message.stop_reason == "max_tokens":
-        raise RuntimeError("Curation response was cut off (max_tokens); try a shorter source video.")
-    text = next((b.text for b in message.content if b.type == "text"), None)
-    if not text:
-        raise RuntimeError("Claude returned no curation output")
     try:
-        return CurationResult.model_validate(json.loads(text))
+        response = gemini.client().models.generate_content(
+            model=settings.gemini_model,
+            contents=user,
+            config=types.GenerateContentConfig(
+                system_instruction=SYSTEM_PROMPT,
+                response_mime_type="application/json",
+                response_schema=CurationResult,
+                safety_settings=gemini.safety_settings(),
+                thinking_config=gemini.thinking_config(),
+                max_output_tokens=65_536,
+                temperature=0.7,
+            ),
+        )
+    except errors.APIError as exc:
+        raise RuntimeError(f"Gemini API error {exc.code}: {exc.message}") from exc
+
+    log.info("curation response id=%s usage=%s", response.response_id, response.usage_metadata)
+    if reason := gemini.blocked_reason(response):
+        raise RuntimeError(f"Gemini did not curate this video: {reason}.")
+    if response.candidates and response.candidates[0].finish_reason == types.FinishReason.MAX_TOKENS:
+        raise RuntimeError("Curation response was cut off (max output tokens); try a shorter source video.")
+    if isinstance(response.parsed, CurationResult):
+        return response.parsed
+    if not response.text:
+        raise RuntimeError("Gemini returned no curation output")
+    try:
+        return CurationResult.model_validate(json.loads(response.text))
     except (json.JSONDecodeError, ValidationError) as exc:
         raise RuntimeError(f"Curation output failed validation: {exc}") from exc
 
@@ -239,7 +219,7 @@ def _normalize_tag(tag: str) -> str | None:
 def curate(transcript: dict[str, Any], duration_ms: int, title: str | None, n_min: int = 5, n_max: int = 10
            ) -> list[dict[str, Any]]:
     words = transcript["words"]
-    result = _call_claude(build_transcript(transcript), duration_ms, title, n_min, n_max)
+    result = _call_gemini(build_transcript(transcript), duration_ms, title, n_min, n_max)
 
     candidates = []
     for c in result.clips:
@@ -285,5 +265,5 @@ def curate(transcript: dict[str, Any], duration_ms: int, title: str | None, n_mi
             "brollKeywords": [k.strip() for k in c.broll_keywords if k.strip()][:3],
         })
     if not clips:
-        raise RuntimeError("Claude did not return any usable clips for this video")
+        raise RuntimeError("Gemini did not return any usable clips for this video")
     return clips

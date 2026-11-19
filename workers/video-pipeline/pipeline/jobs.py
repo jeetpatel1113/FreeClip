@@ -105,7 +105,7 @@ def _process_project(pid: str, data: dict[str, Any], wd: Path) -> None:
     transcript = ingest.transcribe(wav, source.duration_ms, on_transcribe)
     if not transcript["words"]:
         raise RuntimeError("No speech detected in this video; nothing to clip.")
-    api_client.project_progress(pid, "CURATING", 40, f"Claude is reviewing {len(transcript['words'])} words",
+    api_client.project_progress(pid, "CURATING", 40, f"Gemini is reviewing {len(transcript['words'])} words",
                                 transcript={"language": transcript["language"], "segments": transcript["segments"],
                                             "words": [[w["word"], w["start"], w["end"]] for w in transcript["words"]]})
 

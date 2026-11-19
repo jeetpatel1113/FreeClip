@@ -1,5 +1,5 @@
 # FreeClip: one-command self-hosted stack.
-#   cp .env.example .env   # fill in ANTHROPIC_API_KEY + generate the secrets
+#   cp .env.example .env   # fill in GEMINI_API_KEY + generate the secrets
 #   docker compose up -d
 # GPU VPS: docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d
 
@@ -113,8 +113,10 @@ services:
     environment:
       <<: *common-env
       API_URL: http://api:4000
-      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:?set ANTHROPIC_API_KEY in .env}
-      ANTHROPIC_MODEL: ${ANTHROPIC_MODEL:-claude-opus-5-5}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:?set GEMINI_API_KEY in .env}
+      GEMINI_MODEL: ${GEMINI_MODEL:-gemini-2.5-flash}
+      GEMINI_SAFETY_THRESHOLD: ${GEMINI_SAFETY_THRESHOLD:-BLOCK_NONE}
+      GEMINI_THINKING_BUDGET: ${GEMINI_THINKING_BUDGET:--1}
       WHISPER_MODEL: ${WHISPER_MODEL:-large-v3}
       WHISPER_DEVICE: ${WHISPER_DEVICE:-auto}
       USE_WHISPERX: ${USE_WHISPERX:-0}

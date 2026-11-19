@@ -1,9 +1,9 @@
-"""Claude autonomous social agent (Anthropic tool use).
+"""Gemini autonomous social agent (Google GenAI function calling).
 
-For each scheduled post, Claude reviews the clip metadata and the recent posting history,
+For each scheduled post, Gemini reviews the clip metadata and the recent posting history,
 rewrites the caption/hook for the target platform, decides whether to post now or defer
 (topic fatigue), and executes the upload through the platform tool. The worker hosts the
-loop; Claude can only post to the one platform this post targets, and at most once.
+loop; Gemini can only post to the one platform this post targets, and at most once.
 """
 
 from __future__ import annotations
@@ -15,9 +15,9 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-import anthropic
+from google.genai import errors, types
 
-from . import social_apis, storage
+from . import gemini, social_apis, storage
 from .config import settings
 from .social_apis import Account, PublishError, PublishResult
 
@@ -78,6 +78,17 @@ TOOL_DEFS: dict[str, dict[str, Any]] = {
     },
 }
 
+def _declaration(name: str) -> types.FunctionDeclaration:
+    spec = TOOL_DEFS[name]
+    schema = {k: v for k, v in spec["input_schema"].items() if k != "additionalProperties"}
+    return types.FunctionDeclaration(
+        name=name,
+        description=spec["description"],
+        # Gemini rejects an object schema with no properties, so parameterless tools omit it.
+        parameters_json_schema=schema if schema.get("properties") else None,
+    )
+
+
 PLATFORM_TOOL = {
     "INSTAGRAM": "post_instagram_reel",
     "TIKTOK": "post_tiktok_video",
@@ -130,8 +141,7 @@ class PublisherAgent:
         names = ["get_publishing_history", PLATFORM_TOOL[self.platform]]
         if self.post.get("source") == "AUTOPILOT" and int(self.post.get("attempts", 1)) <= 3:
             names.append("reschedule_post")
-        self.tools = [{"name": n, "strict": True, **TOOL_DEFS[n]} for n in names]
-        self.client = anthropic.Anthropic()
+        self.tools = [_declaration(n) for n in names]
 
     # ------------------------------------------------------------------ tool implementations
 
@@ -215,50 +225,62 @@ class PublisherAgent:
             "now_utc": datetime.now(UTC).isoformat(timespec="minutes"),
         }, ensure_ascii=False, indent=2)
 
+    def _config(self) -> types.GenerateContentConfig:
+        return types.GenerateContentConfig(
+            system_instruction=SYSTEM_PROMPT,
+            tools=[types.Tool(function_declarations=self.tools)],
+            tool_config=types.ToolConfig(
+                function_calling_config=types.FunctionCallingConfig(mode=types.FunctionCallingConfigMode.AUTO)
+            ),
+            # We run the loop ourselves so every call is gated, logged, and limited to one upload.
+            automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True),
+            safety_settings=gemini.safety_settings(),
+            thinking_config=gemini.thinking_config(),
+            max_output_tokens=16_000,
+        )
+
     def run(self) -> AgentOutcome:
-        messages: list[dict[str, Any]] = [{
-            "role": "user",
-            "content": f"Publish this clip to {self.platform}.\n\n<post>\n{self._brief()}\n</post>",
-        }]
+        prompt = f"Publish this clip to {self.platform}.\n\n<post>\n{self._brief()}\n</post>"
+        contents: list[types.Content] = [types.Content(role="user", parts=[types.Part.from_text(text=prompt)])]
+        config = self._config()
         steps = self.outcome.log
         for _ in range(MAX_TURNS):
-            response = self.client.beta.messages.create(
-                model=settings.anthropic_model,
-                max_tokens=16_000,
-                betas=["server-side-fallback-2026-07-01"],
-                fallbacks="default",
-                thinking={"type": "adaptive"},
-                output_config={"effort": settings.publisher_effort},
-                system=SYSTEM_PROMPT,
-                tools=self.tools,
-                messages=messages,
+            response = gemini.client().models.generate_content(
+                model=settings.gemini_model, contents=contents, config=config
             )
-            log.info("publisher turn %s stop_reason=%s", response._request_id, response.stop_reason)
-            if response.stop_reason == "refusal":
-                self.outcome.error = "Claude declined to publish this clip."
+            log.info("publisher turn id=%s", response.response_id)
+            if reason := gemini.blocked_reason(response):
+                self.outcome.error = f"Gemini did not publish this clip: {reason}."
                 break
-            if response.stop_reason == "max_tokens":
-                self.outcome.error = "Agent response was truncated (max_tokens)."
+            candidate = response.candidates[0]
+            if candidate.finish_reason == types.FinishReason.MAX_TOKENS:
+                self.outcome.error = "Agent response was truncated (max output tokens)."
                 break
-
-            messages.append({"role": "assistant", "content": response.content})
-            text = " ".join(b.text for b in response.content if b.type == "text").strip()
+            if candidate.content:
+                # Append the model turn unchanged: it carries the thought signatures Gemini needs next turn.
+                contents.append(candidate.content)
+            parts = (candidate.content.parts if candidate.content else None) or []
+            text = " ".join(p.text for p in parts if p.text and not p.thought).strip()
             if text:
                 steps.append({"type": "message", "text": text[:2000]})
-            tool_uses = [b for b in response.content if b.type == "tool_use"]
-            if response.stop_reason != "tool_use" or not tool_uses:
+            calls = response.function_calls or []
+            if not calls:
                 if self.outcome.status == "FAILED" and not self.outcome.error:
                     self.outcome.error = text or "Agent finished without publishing."
                 break
 
-            results = []
-            for tu in tool_uses:
-                result, is_error = self._execute(tu.name, dict(tu.input))
-                steps.append({"type": "tool", "name": tu.name, "input": tu.input, "result": result[:2000],
+            replies = []
+            for call in calls:
+                name = call.name or ""
+                args = dict(call.args or {})
+                result, is_error = self._execute(name, args)
+                steps.append({"type": "tool", "name": name, "input": args, "result": result[:2000],
                               "is_error": is_error})
-                results.append({"type": "tool_result", "tool_use_id": tu.id, "content": result,
-                                "is_error": is_error})
-            messages.append({"role": "user", "content": results})
+                replies.append(types.Part(function_response=types.FunctionResponse(
+                    id=call.id, name=name, response={"error": result} if is_error else {"result": result},
+                )))
+            # All results for one turn go back together, in a single tool turn.
+            contents.append(types.Content(role="tool", parts=replies))
         else:
             if self.outcome.status == "FAILED" and not self.outcome.error:
                 self.outcome.error = f"Agent did not finish within {MAX_TURNS} turns."
@@ -274,7 +296,7 @@ def publish(ctx: dict[str, Any], workdir: Path) -> AgentOutcome:
     workdir.mkdir(parents=True, exist_ok=True)
     try:
         return PublisherAgent(ctx, workdir).run()
-    except anthropic.APIStatusError as exc:
-        return AgentOutcome("FAILED", error=f"Claude API error {exc.status_code}: {exc.message}")
-    except anthropic.APIConnectionError as exc:
-        return AgentOutcome("FAILED", error=f"Could not reach the Claude API: {exc}")
+    except errors.APIError as exc:
+        return AgentOutcome("FAILED", error=f"Gemini API error {exc.code}: {exc.message}")
+    except OSError as exc:
+        return AgentOutcome("FAILED", error=f"Could not reach the Gemini API: {exc}")

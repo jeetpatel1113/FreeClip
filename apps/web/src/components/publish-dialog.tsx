@@ -83,7 +83,7 @@ export function PublishDialog({
         <DialogHeader>
           <DialogTitle>Publish “{clip.title}”</DialogTitle>
           <DialogDescription>
-            Claude reviews each post before it goes out: it adapts the hook for the platform and checks your recent
+            Gemini reviews each post before it goes out: it adapts the hook for the platform and checks your recent
             posts for repeated topics.
           </DialogDescription>
         </DialogHeader>
