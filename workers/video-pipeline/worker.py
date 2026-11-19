@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import shutil
 import signal
 
 from bullmq import Worker
@@ -47,9 +48,20 @@ def _check_env() -> None:
         raise SystemExit(f"Missing required environment variables: {', '.join(missing)}")
 
 
+def _clear_stale_workspaces() -> None:
+    """Jobs killed mid-run (restart, OOM) never reach their cleanup `finally`; reclaim that disk now.
+    Safe at startup because this process has not started any job yet. Assumes one worker container
+    per WORK_DIR volume; scaled-out workers must each get their own volume."""
+    for entry in settings.work_dir.iterdir():
+        if entry.is_dir():
+            shutil.rmtree(entry, ignore_errors=True)
+            log.info("removed stale workspace %s", entry.name)
+
+
 async def main() -> None:
     _check_env()
     settings.work_dir.mkdir(parents=True, exist_ok=True)
+    _clear_stale_workspaces()
     opts = {"connection": settings.redis_url, "lockDuration": 120_000}
     workers = [
         Worker("video-pipeline", pipeline_processor, {**opts, "concurrency": settings.pipeline_concurrency}),
