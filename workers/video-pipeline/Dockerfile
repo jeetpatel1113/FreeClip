@@ -19,10 +19,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
  && rm -rf /var/lib/apt/lists/*
 
 # Static FFmpeg build with libass + NVENC support.
-RUN curl -fsSL https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-n7.1-latest-linux64-gpl-7.1.tar.xz \
+RUN curl -fsSL https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-linux64-gpl.tar.xz \
       | tar -xJ -C /opt \
- && ln -s /opt/ffmpeg-n7.1-latest-linux64-gpl-7.1/bin/ffmpeg /usr/local/bin/ffmpeg \
- && ln -s /opt/ffmpeg-n7.1-latest-linux64-gpl-7.1/bin/ffprobe /usr/local/bin/ffprobe
+ && ln -s /opt/ffmpeg-master-latest-linux64-gpl/bin/ffmpeg /usr/local/bin/ffmpeg \
+ && ln -s /opt/ffmpeg-master-latest-linux64-gpl/bin/ffprobe /usr/local/bin/ffprobe
 
 # Caption fonts (SIL Open Font License): Montserrat (Hormozi/Neon) and Inter (Minimalist).
 RUN mkdir -p /usr/share/fonts/truetype/freeclip && cd /usr/share/fonts/truetype/freeclip \
@@ -46,3 +46,4 @@ COPY workers/video-pipeline/ .
 RUN python -m compileall -q pipeline worker.py
 VOLUME ["/models", "/tmp/freeclip"]
 CMD ["python", "worker.py"]
+

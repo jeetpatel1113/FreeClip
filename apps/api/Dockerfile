@@ -11,7 +11,7 @@ RUN npm ci --workspace apps/api --include-workspace-root=false
 
 FROM deps AS build
 COPY apps/api apps/api
-RUN npx --workspace apps/api prisma generate --schema apps/api/prisma/schema.prisma \
+RUN npx --workspace apps/api prisma generate --schema prisma/schema.prisma \
  && npm run build --workspace apps/api \
  && npm prune --omit=dev --workspace apps/api
 
