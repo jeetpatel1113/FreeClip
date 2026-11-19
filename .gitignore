@@ -18,3 +18,9 @@ tmp/
 .DS_Store
 Thumbs.db
 .claude/settings.local.json
+
+# Claude Code automation (local state)
+.playwright-profile/
+.playwright-mcp/
+published_clips.json
+submitted_clips.csv

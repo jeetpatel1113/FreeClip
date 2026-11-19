@@ -88,6 +88,24 @@ def test_publisher_function_calling_loop(tmp_path=None):
     assert seen[2][-1].parts[0].function_response.id == "2"
 
 
+def test_caption_suffix_is_enforced():
+    f = publisher.with_suffix
+    assert f("Great clip", None, 100) == "Great clip"
+    assert f("Great clip #fyp", "#fyp @brand", 100) == "Great clip #fyp\n\n@brand"  # no duplicate tags
+    assert f("Great clip #FYP @Brand", "#fyp @brand", 100) == "Great clip #FYP @Brand"
+    # Over the limit: the agent's text is shortened, the required suffix never is.
+    out = f("x" * 300, "#ad @brand", 280)
+    assert len(out) <= 280 and out.endswith("\n\n#ad @brand"), out
+    # Disclosures with plain words must appear verbatim.
+    assert f("Nice #ad", "#ad Paid partnership with @brand", 200).endswith("#ad Paid partnership with @brand")
+    try:
+        f("hi", "#" + "a" * 300, 280)
+    except publisher.PublishError:
+        pass
+    else:
+        raise AssertionError("an over-long suffix must fail instead of being cut")
+
+
 def test_ytdlp_duration_filter():
     rejected: list[str] = []
     f = ingest.duration_filter(3600, rejected)

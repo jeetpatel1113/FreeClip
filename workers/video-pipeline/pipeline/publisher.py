@@ -116,6 +116,35 @@ instead of publishing. Otherwise publish now.
 When you are done, reply with one short sentence summarising what you did."""
 
 
+def missing_suffix(text: str, suffix: str | None) -> str:
+    """The part of the campaign suffix the caption does not already contain.
+
+    A suffix made only of #hashtags/@mentions is checked token by token; anything else (e.g. a
+    disclosure like "#ad Paid partnership with @brand") must appear verbatim or is appended whole."""
+    suffix = " ".join((suffix or "").split())
+    if not suffix:
+        return ""
+    tokens = suffix.split()
+    if all(t.startswith(("#", "@")) for t in tokens):
+        have = {t.lower().rstrip(".,!?;:") for t in text.split()}
+        return " ".join(t for t in tokens if t.lower() not in have)
+    return "" if suffix.lower() in " ".join(text.split()).lower() else suffix
+
+
+def with_suffix(text: str, suffix: str | None, limit: int) -> str:
+    """Append the required suffix; if over the platform limit, shorten the agent's text, never the suffix."""
+    extra = missing_suffix(text, suffix)
+    if not extra:
+        return text[:limit]
+    room = limit - len(extra) - 2
+    if room < 0:
+        raise PublishError(f"Required caption suffix is {len(extra)} characters; this platform allows {limit}.")
+    body = text.rstrip()
+    if len(body) > room:
+        body = body[: room - 1].rstrip() + "…" if room > 1 else ""
+    return f"{body}\n\n{extra}" if body else extra
+
+
 @dataclass
 class AgentOutcome:
     status: str  # PUBLISHED | FAILED | RESCHEDULED
@@ -156,25 +185,32 @@ class PublisherAgent:
         if self._published is not None:
             raise PublishError("Already published this post; do not publish again.")
         acct = self.account
+        sfx = self.post.get("captionSuffix")
         if fn_name == "post_instagram_reel":
             if not self.ctx.get("videoUrl"):
                 raise PublishError("No public video URL available for Instagram")
-            caption = args["caption"]
+            caption = with_suffix(args["caption"], sfx, 2200)
             res = social_apis.post_instagram_reel(acct, self.ctx["videoUrl"], caption, bool(args["share_to_feed"]))
         elif fn_name == "post_tiktok_video":
-            caption = args["title"]
+            caption = with_suffix(args["title"], sfx, 2200)
             res = social_apis.post_tiktok_video(acct, self._video_file(), caption)
         elif fn_name == "post_youtube_short":
-            caption = f"{args['title']}\n\n{args['description']}"
-            res = social_apis.post_youtube_short(acct, self._video_file(), args["title"], args["description"],
-                                                 list(args["tags"]))
+            # The Shorts title is what viewers see first: add the suffix there when it fits untruncated
+            # (100 chars), and always in the description.
+            title = args["title"].strip()
+            extra = missing_suffix(title, sfx)
+            if extra and len(title) + 1 + len(extra) <= 100:
+                title = f"{title} {extra}"
+            description = with_suffix(args["description"], sfx, 5000)
+            caption = f"{title}\n\n{description}"
+            res = social_apis.post_youtube_short(acct, self._video_file(), title, description, list(args["tags"]))
         elif fn_name == "post_x_video":
-            if len(args["text"]) > 280:
-                raise PublishError(f"Text is {len(args['text'])} characters; X allows 280.")
-            caption = args["text"]
+            caption = with_suffix(args["text"], sfx, 280)
+            if len(caption) > 280:
+                raise PublishError(f"Text is {len(caption)} characters; X allows 280.")
             res = social_apis.post_x_video(acct, self._video_file(), caption)
         elif fn_name == "post_linkedin_video":
-            caption = args["commentary"]
+            caption = with_suffix(args["commentary"], sfx, 3000)
             res = social_apis.post_linkedin_video(acct, self._video_file(), caption, args["title"])
         else:
             raise PublishError(f"Unknown tool {fn_name}")
@@ -216,6 +252,8 @@ class PublisherAgent:
             "account": self.ctx["account"].get("accountName"),
             "post_source": self.post.get("source"),
             "creator_caption": self.post.get("caption"),
+            # Appended automatically after your caption; leave room for it and don't repeat it.
+            "required_caption_suffix": self.post.get("captionSuffix") or None,
             "clip": {
                 "title": c["title"], "on_screen_hook": c["hook"], "virality_score": c["viralityScore"],
                 "duration_seconds": round(c["durationMs"] / 1000), "hook_breakdown": c.get("hookBreakdown"),

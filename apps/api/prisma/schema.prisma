@@ -166,6 +166,8 @@ model ScheduledPost {
   status          PostStatus     @default(SCHEDULED)
   source          PostSource     @default(MANUAL)
   caption         String?
+  /// Appended verbatim to the final caption (campaign hashtags, @mentions, disclosures).
+  captionSuffix   String?
   externalPostId  String?
   externalUrl     String?
   error           String?

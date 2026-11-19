@@ -1,0 +1,4 @@
+# Host-side dependencies for freeclip_mcp.py (Claude Code MCP server). Not used by the Docker images.
+# mcp 2.x renamed FastMCP to MCPServer; this server uses the 1.x FastMCP API.
+mcp>=1.12,<2
+httpx>=0.27

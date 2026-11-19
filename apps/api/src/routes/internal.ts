@@ -195,6 +195,7 @@ export async function internalRoutes(app: FastifyInstance) {
         status: post.status,
         source: post.source,
         caption: post.caption,
+        captionSuffix: post.captionSuffix,
         scheduledFor: post.scheduledFor,
         attempts: post.attempts,
       },

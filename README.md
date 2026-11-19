@@ -14,7 +14,7 @@ docker compose up -d
 
 | | |
 |---|---|
-| **Ingest** | `yt-dlp` downloads best-quality MP4 (≤1080p) from YouTube, Twitch VODs/clips and Kick, or direct uploads go straight to MinIO by presigned URL. Audio is extracted as 16 kHz mono WAV. |
+| **Ingest** | `yt-dlp` downloads best-quality MP4 (≤1080p) from YouTube, Twitch VODs/clips and Kick, or direct uploads go straight to RustFS by presigned URL. Audio is extracted as 16 kHz mono WAV. |
 | **Transcription** | `faster-whisper` (CUDA when available) with word-level millisecond timestamps and VAD filtering. Optional `whisperx` forced alignment for tighter boundaries. |
 | **AI viral curation** | Gemini (`gemini-3.8-flash` via the `google-genai` SDK, structured outputs with a Pydantic `response_schema`) reads the timestamped transcript and returns standalone 30-60 s clips with a virality score (0-100), an on-screen hook, a hook breakdown (type, first 3 s, emotional trigger, payoff, sub-scores), and platform-native captions and hashtags. Boundaries are snapped to exact word timestamps, finished on sentence ends, and de-overlapped. |
 | **Active speaker reframing** | MediaPipe Face Mesh tracks faces, lip-gap variance measures who is talking, WebRTC VAD gates it to real speech, and hysteresis prevents flicker. A constant-velocity Kalman filter plus a dead-zone and a moving average gives smooth, jitter-free camera motion. Two people trading turns get an automatic stacked split-screen. |
@@ -31,9 +31,9 @@ docker compose up -d
 │  apps/web    │ ──────────────▶ │  apps/api           │ ──────────▶ │ workers/video-pipeline       │
 │  Next.js 15  │                 │  Fastify + Prisma   │   (Redis)   │ Python 3.11 · FFmpeg · CUDA  │
 │  Tailwind +  │ ◀── presigned ─ │  BullMQ + scheduler │ ◀────────── │ ingest → curator → reframer  │
-│  shadcn/ui   │     MinIO URLs  │  REST + /internal   │  callbacks  │ → captions → publisher agent │
+│  shadcn/ui   │     RustFS URLs  │  REST + /internal   │  callbacks  │ → captions → publisher agent │
 └──────────────┘                 └─────────┬───────────┘             └───────────────┬──────────────┘
-                                           │ PostgreSQL                              │ MinIO (S3)
+                                           │ PostgreSQL                              │ RustFS (S3)
 ```
 
 * **Queues.** `video-pipeline` carries the `process-project` and `render-clip` jobs, and `publish` carries `publish-post` (delayed jobs, one per scheduled post). A `scheduler` cron (`*/5 * * * *`) re-enqueues due posts whose jobs were lost, recovers stuck posts, and picks up agent-deferred posts.
@@ -75,13 +75,13 @@ docker compose up -d                                              # CPU
 docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d   # NVIDIA GPU
 ```
 
-Open http://localhost:3000. The MinIO console is at http://localhost:9001.
+Open http://localhost:3000. The RustFS console is at http://localhost:9001.
 
 The first run downloads the Whisper model (~3 GB for `large-v3`) into the `whisper-models` volume. On CPU, set `WHISPER_MODEL=small` or `distil-large-v3`.
 
 ### Deploying on a VPS
 
-* Put the web app (port 3000) and MinIO (port 9000) behind HTTPS with a reverse proxy such as Caddy or Nginx.
+* Put the web app (port 3000) and RustFS (port 9000) behind HTTPS with a reverse proxy such as Caddy or Nginx.
 * Set `WEB_ORIGIN=https://clips.example.com` and `S3_PUBLIC_ENDPOINT=https://media.example.com`. **Instagram requires** a public HTTPS video URL, so the media host must be reachable from the internet.
 * Set `API_AUTH_TOKEN` and protect the web app with your proxy's auth (for example basic auth or an SSO forward-auth). FreeClip is single-tenant: everyone who can reach the dashboard is the owner.
 
@@ -108,12 +108,12 @@ Safety filters are relaxed only for the configurable categories. Google's built-
 
 ```bash
 npm install                                   # installs apps/api + apps/web workspaces
-docker compose up -d postgres redis minio     # infra only
+docker compose up -d postgres redis s3        # infra only
 
 # API
 cd apps/api
 export DATABASE_URL=postgresql://freeclip:<pw>@localhost:5432/freeclip INTERNAL_API_TOKEN=... ENCRYPTION_KEY=... \
-       S3_ACCESS_KEY=freeclip S3_SECRET_KEY=<minio pw>
+       S3_ACCESS_KEY=freeclip S3_SECRET_KEY=<MINIO_ROOT_PASSWORD>
 npx prisma db push && npm run dev
 
 # Web
@@ -138,7 +138,7 @@ The smoke tests run offline. They check the structured-output schema, the Gemini
 
 | Method | Path | |
 |---|---|---|
-| `POST` | `/uploads/presign` | Presigned PUT for direct-to-MinIO uploads |
+| `POST` | `/uploads/presign` | Presigned PUT for direct-to-RustFS uploads |
 | `POST` | `/projects` | `{ sourceUrl \| sourceKey, captionStyle?, brollEnabled?, clipCountMin?, clipCountMax? }` |
 | `GET` | `/projects`, `/projects/:id` | Progress, clips (sorted by virality) and presigned media URLs |
 | `POST` | `/projects/:id/retry` | Re-run a failed project |
@@ -147,6 +147,26 @@ The smoke tests run offline. They check the structured-output schema, the Gemini
 | `GET` / `PATCH` / `DELETE` | `/posts[/:id]` | Schedule, reschedule, cancel; `POST /posts/:id/retry` |
 | `GET` / `PATCH` | `/settings` | Auto-Pilot and defaults |
 | `PUT` / `DELETE` | `/social-accounts/:platform` | Store or remove encrypted credentials |
+
+## Claude Code automation (Whop Content Rewards)
+
+`.mcp.json` registers two MCP servers for Claude Code in this folder:
+
+- **playwright**: the official Playwright MCP server, with a persistent Chrome profile in `./.playwright-profile`, so your Whop login is kept between runs.
+- **freeclip**: `freeclip_mcp.py`, which talks to the FreeClip API. Install its dependencies with `pip install -r requirements-mcp.txt`. Its tools:
+  - `run_freeclip_pipeline`: ingest, wait for clips, then publish the top clips with a `caption_suffix` that is always added to the caption.
+  - `get_latest_published_urls`: latest URLs with their age, for the 30-minute submission window.
+  - `log_campaign_submission`: records submissions in `submitted_clips.csv` and blocks duplicates.
+
+The database stores every post's URL, status and publish time. `published_clips.json` is a copy of that data, refreshed by the MCP tools, so posts published from the web UI or by Auto-Pilot show up there too.
+
+One-time Whop login. Close the window when you're done, because the profile can't be open in two browsers at once:
+
+```powershell
+npx -y playwright@latest open --channel chrome --user-data-dir .playwright-profile https://whop.com/login
+```
+
+Then, in Claude Code: `/clip-campaign <campaign_url> <video_path> [--auto]`. Without `--auto`, it stops before every final Submit click and waits for you to confirm.
 
 ## Notes and limits
 

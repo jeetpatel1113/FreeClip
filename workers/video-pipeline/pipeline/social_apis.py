@@ -46,6 +46,7 @@ class Account:
     external_id: str | None
     expires_at: datetime | None
     meta: dict[str, Any]
+    account_name: str | None = None
 
     @classmethod
     def from_api(cls, a: dict[str, Any]) -> Account:
@@ -55,7 +56,7 @@ class Account:
             refresh_token=a.get("refreshToken"), client_id=a.get("clientId"), client_secret=a.get("clientSecret"),
             external_id=a.get("externalId"),
             expires_at=datetime.fromisoformat(exp.replace("Z", "+00:00")) if exp else None,
-            meta=a.get("meta") or {},
+            meta=a.get("meta") or {}, account_name=a.get("accountName"),
         )
 
     def expiring(self) -> bool:
@@ -184,8 +185,13 @@ def post_tiktok_video(acct: Account, video: Path, title: str, privacy_level: str
         if status == "PUBLISH_COMPLETE":
             ids = st.get("publicaly_available_post_id") or []
             post_id = str(ids[0]) if ids else publish_id
-            return PublishResult(post_id, f"https://www.tiktok.com/video/{ids[0]}" if ids else None,
-                                 f"privacy={privacy}")
+            username = info.get("creator_username") or acct.account_name
+            url = None
+            if ids:
+                # Canonical form; Content Rewards and other link checkers expect /@user/video/<id>.
+                url = (f"https://www.tiktok.com/@{username.lstrip('@')}/video/{ids[0]}" if username
+                       else f"https://www.tiktok.com/video/{ids[0]}")
+            return PublishResult(post_id, url, f"privacy={privacy}" + ("" if ids else "; no public post id"))
         if status == "FAILED":
             raise PublishError(f"TikTok publish failed: {st.get('fail_reason')}")
         time.sleep(5)

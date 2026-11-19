@@ -78,6 +78,7 @@ export async function clipRoutes(app: FastifyInstance) {
         platforms: z.array(Platform).min(1),
         scheduledFor: z.string().datetime({ offset: true }).optional(),
         captions: z.record(z.string(), z.string().max(5000)).optional(),
+        captionSuffix: z.string().trim().max(1000).optional(),
       })
       .parse(req.body);
 
@@ -108,6 +109,7 @@ export async function clipRoutes(app: FastifyInstance) {
           scheduledFor: when,
           status: when.getTime() <= Date.now() + 30_000 ? "QUEUED" : "SCHEDULED",
           caption: body.captions?.[platform.toLowerCase()] ?? defaults[platform.toLowerCase()] ?? null,
+          captionSuffix: body.captionSuffix || null,
         },
       });
       await enqueuePublish(post.id, when.getTime() - Date.now());
