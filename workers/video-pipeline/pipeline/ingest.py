@@ -36,10 +36,38 @@ class Source:
 # --------------------------------------------------------------------------- download
 
 
+def duration_filter(max_seconds: int, rejected: list[str] | None = None) -> Callable[..., str | None]:
+    """yt-dlp match_filter callable: return None to download, or a reason string to skip.
+
+    Replaces a filter-string expression, whose parser compared int durations against str values
+    and crashed with TypeError. Unknown durations (None or non-numeric) are allowed through and
+    checked after download with ffprobe.
+    """
+
+    def _filter(info: dict[str, Any], *, incomplete: bool = False) -> str | None:
+        if info.get("is_live") or info.get("live_status") in {"is_live", "is_upcoming"}:
+            reason = "Live streams can't be clipped until they end; use the VOD link instead."
+        else:
+            try:
+                duration = float(info.get("duration") or 0)
+            except (TypeError, ValueError):
+                duration = 0.0
+            if not duration or duration <= max_seconds:
+                return None
+            reason = (f"Video is {duration / 60:.0f} min, longer than MAX_SOURCE_MINUTES "
+                      f"({max_seconds // 60} min).")
+        if rejected is not None:
+            rejected.append(reason)
+        return reason
+
+    return _filter
+
+
 def download_url(url: str, workdir: Path, on_progress: ProgressFn | None = None) -> tuple[Path, str | None]:
     import yt_dlp
 
     workdir.mkdir(parents=True, exist_ok=True)
+    rejected: list[str] = []
 
     def hook(d: dict[str, Any]) -> None:
         if on_progress and d.get("status") == "downloading":
@@ -55,11 +83,13 @@ def download_url(url: str, workdir: Path, on_progress: ProgressFn | None = None)
         "noplaylist": True,
         "quiet": True,
         "no_warnings": True,
+        # The console progress bar floods container logs; progress reaches the UI via the hook instead.
+        "noprogress": True,
         "progress_hooks": [hook],
         "retries": 5,
         "fragment_retries": 10,
         "concurrent_fragment_downloads": 4,
-        "match_filter": yt_dlp.utils.match_filter_func(f"duration <= {settings.max_source_minutes * 60} | !duration"),
+        "match_filter": duration_filter(settings.max_source_minutes * 60, rejected),
     }
     if settings.ytdlp_cookies_file:
         opts["cookiefile"] = settings.ytdlp_cookies_file
@@ -70,6 +100,8 @@ def download_url(url: str, workdir: Path, on_progress: ProgressFn | None = None)
             raise RuntimeError("yt-dlp returned no info (video may be private, live, or too long)")
         if "entries" in info:
             info = next(iter(info["entries"]))
+    if rejected:
+        raise RuntimeError(rejected[0])
     candidates = sorted(workdir.glob("source.*"), key=lambda p: p.stat().st_size, reverse=True)
     video = next((p for p in candidates if p.suffix in {".mp4", ".mkv", ".webm", ".mov"}), None)
     if video is None:

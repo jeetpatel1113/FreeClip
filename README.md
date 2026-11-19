@@ -16,7 +16,7 @@ docker compose up -d
 |---|---|
 | **Ingest** | `yt-dlp` downloads best-quality MP4 (≤1080p) from YouTube, Twitch VODs/clips and Kick, or direct uploads go straight to MinIO by presigned URL. Audio is extracted as 16 kHz mono WAV. |
 | **Transcription** | `faster-whisper` (CUDA when available) with word-level millisecond timestamps and VAD filtering. Optional `whisperx` forced alignment for tighter boundaries. |
-| **AI viral curation** | Gemini (`gemini-2.5-flash` via the `google-genai` SDK, structured outputs with a Pydantic `response_schema`) reads the timestamped transcript and returns standalone 30-60 s clips with a virality score (0-100), an on-screen hook, a hook breakdown (type, first 3 s, emotional trigger, payoff, sub-scores), and platform-native captions and hashtags. Boundaries are snapped to exact word timestamps, finished on sentence ends, and de-overlapped. |
+| **AI viral curation** | Gemini (`gemini-3.8-flash` via the `google-genai` SDK, structured outputs with a Pydantic `response_schema`) reads the timestamped transcript and returns standalone 30-60 s clips with a virality score (0-100), an on-screen hook, a hook breakdown (type, first 3 s, emotional trigger, payoff, sub-scores), and platform-native captions and hashtags. Boundaries are snapped to exact word timestamps, finished on sentence ends, and de-overlapped. |
 | **Active speaker reframing** | MediaPipe Face Mesh tracks faces, lip-gap variance measures who is talking, WebRTC VAD gates it to real speech, and hysteresis prevents flicker. A constant-velocity Kalman filter plus a dead-zone and a moving average gives smooth, jitter-free camera motion. Two people trading turns get an automatic stacked split-screen. |
 | **Dynamic captions** | Generated `.ass` subtitles with word-by-word highlighting. Styles: **Hormozi Bold** (uppercase, yellow/green pop), **Minimalist** (dimmed inactive words), **Neon** (glowing cyan outline, magenta active word). Burned in with FFmpeg (NVENC when available). |
 | **B-roll** | Optional Pexels stock cutaways, placed using keywords Gemini suggests and kept clear of the hook and the payoff. |
@@ -92,7 +92,7 @@ All settings live in [`.env.example`](.env.example), with step-by-step instructi
 | Variable | Default | Notes |
 |---|---|---|
 | `GEMINI_API_KEY` | (required) | From aistudio.google.com |
-| `GEMINI_MODEL` | `gemini-2.5-flash` | Used for curation and the publishing agent |
+| `GEMINI_MODEL` | `gemini-3.8-flash` | Used for curation and the publishing agent |
 | `GEMINI_SAFETY_THRESHOLD` | `BLOCK_NONE` | Applied to harassment, hate, sexual, dangerous and civic categories so profanity in transcripts isn't blocked |
 | `GEMINI_THINKING_BUDGET` | `-1` | `-1` dynamic, `0` off (Flash), `>0` token budget |
 | `WHISPER_MODEL` | `large-v3` | `small`/`distil-large-v3` for CPU |

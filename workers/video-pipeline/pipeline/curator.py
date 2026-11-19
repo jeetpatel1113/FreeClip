@@ -145,7 +145,7 @@ def _call_gemini(transcript_text: str, duration_ms: int, title: str | None, n_mi
         f"<transcript>\n{transcript_text}\n</transcript>"
     )
     try:
-        response = gemini.client().models.generate_content(
+        response = gemini.generate(
             model=settings.gemini_model,
             contents=user,
             config=types.GenerateContentConfig(

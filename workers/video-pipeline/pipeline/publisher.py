@@ -243,11 +243,12 @@ class PublisherAgent:
         prompt = f"Publish this clip to {self.platform}.\n\n<post>\n{self._brief()}\n</post>"
         contents: list[types.Content] = [types.Content(role="user", parts=[types.Part.from_text(text=prompt)])]
         config = self._config()
+        models = gemini.candidate_models(settings.gemini_model)
         steps = self.outcome.log
         for _ in range(MAX_TURNS):
-            response = gemini.client().models.generate_content(
-                model=settings.gemini_model, contents=contents, config=config
-            )
+            # Stick to whichever model answered first: thought signatures are tied to the producing model.
+            response, model = gemini.generate_with_model(models=models, contents=contents, config=config)
+            models = [model]
             log.info("publisher turn id=%s", response.response_id)
             if reason := gemini.blocked_reason(response):
                 self.outcome.error = f"Gemini did not publish this clip: {reason}."

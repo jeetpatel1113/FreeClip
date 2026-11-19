@@ -24,7 +24,13 @@ class Settings:
     s3_access_key: str = field(default_factory=lambda: os.getenv("S3_ACCESS_KEY", "minioadmin"))
     s3_secret_key: str = field(default_factory=lambda: os.getenv("S3_SECRET_KEY", "minioadmin"))
 
-    gemini_model: str = field(default_factory=lambda: os.getenv("GEMINI_MODEL", "gemini-2.5-flash"))
+    gemini_model: str = field(default_factory=lambda: os.getenv("GEMINI_MODEL", "gemini-3.8-flash"))
+    gemini_timeout_seconds: int = field(default_factory=lambda: int(os.getenv("GEMINI_TIMEOUT_SECONDS", "600")))
+    # Tried in order when GEMINI_MODEL is overloaded (503/429) or unavailable to the key (404).
+    gemini_fallback_models: tuple[str, ...] = field(default_factory=lambda: tuple(
+        m.strip() for m in os.getenv("GEMINI_FALLBACK_MODELS", "gemini-3.7-flash,gemini-3.6-flash,gemini-3.5-flash")
+        .split(",") if m.strip()
+    ))
     # BLOCK_NONE | BLOCK_ONLY_HIGH | BLOCK_MEDIUM_AND_ABOVE | OFF
     gemini_safety_threshold: str = field(default_factory=lambda: os.getenv("GEMINI_SAFETY_THRESHOLD", "BLOCK_NONE"))
     # -1 = dynamic thinking, 0 = off (Flash only), >0 = token budget. Empty = model default.

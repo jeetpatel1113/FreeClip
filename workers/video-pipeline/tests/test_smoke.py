@@ -13,7 +13,7 @@ os.environ["PUBLISH_DRY_RUN"] = "1"
 
 from google.genai import types  # noqa: E402
 
-from pipeline import captions, curator, gemini, publisher, reframer  # noqa: E402
+from pipeline import captions, curator, gemini, ingest, publisher, reframer  # noqa: E402
 
 
 def _words(n: int, step: int = 400) -> list[dict]:
@@ -86,6 +86,73 @@ def test_publisher_function_calling_loop(tmp_path=None):
     roles = [c.role for c in seen[2]]
     assert roles == ["user", "model", "tool", "model", "tool"], roles
     assert seen[2][-1].parts[0].function_response.id == "2"
+
+
+def test_ytdlp_duration_filter():
+    rejected: list[str] = []
+    f = ingest.duration_filter(3600, rejected)
+    assert f({"duration": 120}, incomplete=False) is None
+    assert f({"duration": 120.5}) is None
+    assert f({"duration": None}) is None          # unknown duration: allowed, checked by ffprobe later
+    assert f({"duration": "n/a"}) is None         # non-numeric must not raise TypeError
+    assert f({}) is None
+    assert f({"duration": 7200}) is not None
+    assert f({"duration": 60, "is_live": True}) is not None
+    assert len(rejected) == 2
+
+
+def test_gemini_retries_transient_errors():
+    from google.genai import errors
+    calls = []
+
+    class Flaky:
+        def generate_content(self, model, contents, config):
+            calls.append(1)
+            if len(calls) < 3:
+                body = {"error": {"code": 503, "message": "high demand", "status": "UNAVAILABLE"}}
+                raise errors.ServerError(503, body)
+            return _resp(types.Part.from_text(text="ok"))
+
+    class C:
+        models = Flaky()
+
+    orig = gemini.client
+    gemini.client = lambda: C()
+    try:
+        r = gemini.generate(model="m", contents="x", config=types.GenerateContentConfig(), base_delay=0,
+                            attempts_per_model=3)
+    finally:
+        gemini.client = orig
+    assert len(calls) == 3 and r.text == "ok"
+
+
+def test_gemini_falls_back_to_next_model():
+    from google.genai import errors
+    seen = []
+
+    class Busy:
+        def generate_content(self, model, contents, config):
+            seen.append(model)
+            if model == "primary":
+                raise errors.ServerError(503, {"error": {"code": 503, "message": "busy", "status": "UNAVAILABLE"}})
+            if model == "slow":
+                raise TimeoutError("read timed out")
+            if model == "gone":
+                raise errors.ClientError(404, {"error": {"code": 404, "message": "nope", "status": "NOT_FOUND"}})
+            return _resp(types.Part.from_text(text=model))
+
+    class C:
+        models = Busy()
+
+    orig = gemini.client
+    gemini.client = lambda: C()
+    try:
+        r, used = gemini.generate_with_model(models=["primary", "slow", "gone", "backup"], contents="x",
+                                             config=types.GenerateContentConfig(), base_delay=0)
+    finally:
+        gemini.client = orig
+    assert used == "backup" and r.text == "backup"
+    assert seen == ["primary"] * 3 + ["slow", "gone", "backup"]  # timeouts fall through immediately
 
 
 def test_snap_enforces_duration():

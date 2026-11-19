@@ -102,6 +102,8 @@ def _process_project(pid: str, data: dict[str, Any], wd: Path) -> None:
                                 thumbnailKey=storage.upload(thumb, f"projects/{pid}/thumb.jpg", "image/jpeg"))
 
     wav = ingest.extract_wav(source.video, wd / "audio16k.wav")
+    # First run downloads the Whisper model (~3 GB for large-v3); say so instead of looking stalled.
+    api_client.project_progress(pid, "TRANSCRIBING", 15, f"Loading speech model ({settings.whisper_model})")
     transcript = ingest.transcribe(wav, source.duration_ms, on_transcribe)
     if not transcript["words"]:
         raise RuntimeError("No speech detected in this video; nothing to clip.")
